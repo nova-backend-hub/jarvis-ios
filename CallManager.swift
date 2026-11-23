@@ -5,9 +5,13 @@ import AVFoundation
 final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
     static let shared = CallManager()
 
+    private static let defaultCloudRunUrl = "https://jarvis-backend-160271972570.us-central1.run.app"
+    private static let defaultBearerToken = "31e5d775f191f451ff7be64a259bedfb1a36ab02a7745987cf7844c6596ea862"
+
     private let provider: CXProvider
     private let callController = CXCallController()
     private var currentCallUUID: UUID?
+    private var currentCallId: String?
     private var socketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
     private var silentEngine: AVAudioEngine?
@@ -27,8 +31,10 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
     @Published var isConnected = false
 
     override init() {
-        self.serverUrl = UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "https://jarvis-backend-160271972570.us-central1.run.app"
-        self.accessToken = UserDefaults.standard.string(forKey: "jarvis_access_token") ?? ""
+        let savedUrl = UserDefaults.standard.string(forKey: "jarvis_server_url") ?? ""
+        self.serverUrl = savedUrl.isEmpty ? Self.defaultCloudRunUrl : savedUrl
+        let savedTok = UserDefaults.standard.string(forKey: "jarvis_access_token") ?? ""
+        self.accessToken = savedTok.isEmpty ? Self.defaultBearerToken : savedTok
         self.keepAliveAudio = UserDefaults.standard.object(forKey: "jarvis_keepalive_audio") as? Bool ?? true
 
         let config = CXProviderConfiguration(localizedName: "JARVIS")
@@ -77,15 +83,19 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/ws"
-        if !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let escaped = accessToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? accessToken
+        let tok = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tok.isEmpty {
+            let escaped = tok.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tok
             wsUrlStr += "?token=\(escaped)"
         }
         guard let url = URL(string: wsUrlStr) else { return }
-        let task = URLSession(configuration: .default).webSocketTask(with: url)
+        var req = URLRequest(url: url)
+        if !tok.isEmpty {
+            req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        }
+        let task = URLSession(configuration: .default).webSocketTask(with: req)
         self.socketTask = task
         task.resume()
-        isConnected = true
         listen()
 
         pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
@@ -105,14 +115,18 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
             guard let self else { return }
             switch result {
             case .success(.string(let text)):
+                DispatchQueue.main.async {
+                    self.isConnected = true
+                }
                 if let data = text.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let type = obj["type"] as? String,
-                   type == "incoming_call",
-                   let call = obj["call"] as? [String: Any] {
-                    let reason = (call["reason"] as? String) ?? "JARVIS Calling"
-                    DispatchQueue.main.async {
-                        self.reportIncomingCall(reason: reason)
+                   let type = obj["type"] as? String {
+                    if type == "incoming_call", let call = obj["call"] as? [String: Any] {
+                        let reason = (call["reason"] as? String) ?? "JARVIS Calling"
+                        let callId = (call["callId"] as? String) ?? ""
+                        DispatchQueue.main.async {
+                            self.reportIncomingCall(reason: reason, callId: callId)
+                        }
                     }
                 }
                 self.listen()
@@ -127,9 +141,13 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         }
     }
 
-    func reportIncomingCall(reason: String) {
+    func reportIncomingCall(reason: String, callId: String = "") {
+        if currentCallUUID != nil && !callId.isEmpty && currentCallId == callId {
+            return
+        }
         let uuid = UUID()
         self.currentCallUUID = uuid
+        self.currentCallId = callId
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: reason)
         update.localizedCallerName = "JARVIS — \(reason)"
@@ -141,22 +159,34 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         guard let uuid = currentCallUUID else { return }
         callController.request(CXTransaction(action: CXEndCallAction(call: uuid))) { _ in }
         currentCallUUID = nil
+        currentCallId = nil
     }
 
     func providerDidReset(_ provider: CXProvider) {
         currentCallUUID = nil
+        currentCallId = nil
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
         try? session.setActive(true)
+        if let cid = currentCallId, !cid.isEmpty {
+            let msg = "{\"type\":\"answer_call\",\"callId\":\"\(cid)\"}"
+            socketTask?.send(.string(msg)) { _ in }
+        }
         NotificationCenter.default.post(name: NSNotification.Name("JARVISAnsweredCall"), object: nil)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        if let cid = currentCallId, !cid.isEmpty {
+            let msg = "{\"type\":\"decline_call\",\"callId\":\"\(cid)\"}"
+            socketTask?.send(.string(msg)) { _ in }
+        }
         currentCallUUID = nil
+        currentCallId = nil
+        NotificationCenter.default.post(name: NSNotification.Name("JARVISEndedCall"), object: nil)
         if keepAliveAudio { startSilentKeepalive() }
         action.fulfill()
     }

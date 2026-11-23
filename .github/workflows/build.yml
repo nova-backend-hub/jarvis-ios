@@ -41,11 +41,20 @@ jobs:
         path: JARVIS.ipa
         retention-days: 30
 
-    - name: Publish Release IPA
+    - name: Update v1.0.0 Release Asset
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v1.0.0
-        name: JARVIS iOS v1.0.0 (CallKit + Intercom)
-        body: "Unsigned CallKit + WebRTC/WebSocket Intercom shell for JARVIS on Windows (192.168.1.150:8787). Installable via AeroLoad / AltStore / SideStore."
+        name: JARVIS iOS (CallKit + Cloud Run Intercom)
+        body: "Unsigned CallKit + WebRTC/WebSocket Intercom shell for JARVIS on Google Cloud Run & Home LAN Bridge. Includes OAuth Safari handoff, WhatsApp contact voice control, Proton/Gmail/Microsoft mail, 5 Gree+ ACs, 41 Tuya devices & Smart TV ADB."
+        files: JARVIS.ipa
+        make_latest: false
+
+    - name: Publish v1.1.0 Latest Release IPA
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.1.0
+        name: JARVIS iOS v1.1.0 (Full Feature Suite + CallKit)
+        body: "Unsigned CallKit + WebRTC/WebSocket Intercom shell for JARVIS v1.1.0. Pre-configured with Cloud Run bearer token, Safari OAuth handoff for Google/Microsoft/Claude/ChatGPT, CallKit answer/hangup bridge, WhatsApp contact search, Proton Mail, Gree+, Tuya, Smart TV & Antigravity Orchestrator models."
         files: JARVIS.ipa
         make_latest: true
