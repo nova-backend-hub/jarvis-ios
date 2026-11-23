@@ -1,0 +1,51 @@
+name: Build JARVIS Unsigned IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Build JARVIS Unsigned App
+      run: |
+        xcodebuild -project JARVISApp.xcodeproj \
+                   -scheme JARVISApp \
+                   -configuration Release \
+                   -sdk iphoneos \
+                   -derivedDataPath build \
+                   CODE_SIGN_IDENTITY="" \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGNING_ALLOWED=NO
+
+    - name: Package into IPA
+      run: |
+        mkdir -p Payload
+        cp -r build/Build/Products/Release-iphoneos/JARVISApp.app Payload/
+        zip -r "JARVIS.ipa" Payload
+        rm -rf Payload
+
+    - name: Upload IPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: JARVIS-ipa
+        path: JARVIS.ipa
+        retention-days: 30
+
+    - name: Publish Release IPA
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.0.0
+        name: JARVIS iOS v1.0.0 (CallKit + Intercom)
+        body: "Unsigned CallKit + WebRTC/WebSocket Intercom shell for JARVIS on Windows (192.168.1.150:8787). Installable via AeroLoad / AltStore / SideStore."
+        files: JARVIS.ipa
+        make_latest: true
