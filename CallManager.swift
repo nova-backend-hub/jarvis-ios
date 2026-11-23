@@ -9,13 +9,28 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
     private let callController = CXCallController()
     private var currentCallUUID: UUID?
     private var socketTask: URLSessionWebSocketTask?
+    private var pingTimer: Timer?
+    private var silentEngine: AVAudioEngine?
+
     @Published var serverUrl: String {
         didSet { UserDefaults.standard.set(serverUrl, forKey: "jarvis_server_url") }
+    }
+    @Published var accessToken: String {
+        didSet { UserDefaults.standard.set(accessToken, forKey: "jarvis_access_token") }
+    }
+    @Published var keepAliveAudio: Bool {
+        didSet {
+            UserDefaults.standard.set(keepAliveAudio, forKey: "jarvis_keepalive_audio")
+            if keepAliveAudio { startSilentKeepalive() } else { stopSilentKeepalive() }
+        }
     }
     @Published var isConnected = false
 
     override init() {
-        self.serverUrl = UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "http://192.168.1.150:8787"
+        self.serverUrl = UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "https://jarvis-backend-160271972570.us-central1.run.app"
+        self.accessToken = UserDefaults.standard.string(forKey: "jarvis_access_token") ?? ""
+        self.keepAliveAudio = UserDefaults.standard.object(forKey: "jarvis_keepalive_audio") as? Bool ?? true
+
         let config = CXProviderConfiguration(localizedName: "JARVIS")
         config.supportsVideo = false
         config.maximumCallGroups = 1
@@ -24,22 +39,65 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         self.provider = CXProvider(configuration: config)
         super.init()
         self.provider.setDelegate(self, queue: nil)
+        if keepAliveAudio { startSilentKeepalive() }
         connectWebSocket()
     }
 
+    /// Silent zero-gain audio session keeps the iOS process & CallKit WebSocket awake even when locked for 10+ minutes.
+    func startSilentKeepalive() {
+        stopSilentKeepalive()
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
+
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1)!
+        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8000)!
+        buf.frameLength = 8000
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = 0.0
+        try? engine.start()
+        player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+        player.play()
+        self.silentEngine = engine
+    }
+
+    func stopSilentKeepalive() {
+        silentEngine?.stop()
+        silentEngine = nil
+    }
+
     func connectWebSocket() {
+        pingTimer?.invalidate()
         socketTask?.cancel(with: .goingAway, reason: nil)
-        let wsUrlStr = serverUrl
+
+        var wsUrlStr = serverUrl
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/ws"
+        if !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let escaped = accessToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? accessToken
+            wsUrlStr += "?token=\(escaped)"
+        }
         guard let url = URL(string: wsUrlStr) else { return }
-        let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
+        let task = URLSession(configuration: .default).webSocketTask(with: url)
         self.socketTask = task
         task.resume()
         isConnected = true
         listen()
+
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            self?.socketTask?.sendPing { error in
+                if error != nil {
+                    DispatchQueue.main.async {
+                        self?.isConnected = false
+                        self?.connectWebSocket()
+                    }
+                }
+            }
+        }
     }
 
     private func listen() {
@@ -81,8 +139,7 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
 
     func endActiveCall() {
         guard let uuid = currentCallUUID else { return }
-        let action = CXEndCallAction(call: uuid)
-        callController.request(CXTransaction(action: action)) { _ in }
+        callController.request(CXTransaction(action: CXEndCallAction(call: uuid))) { _ in }
         currentCallUUID = nil
     }
 
@@ -100,6 +157,7 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         currentCallUUID = nil
+        if keepAliveAudio { startSilentKeepalive() }
         action.fulfill()
     }
 }

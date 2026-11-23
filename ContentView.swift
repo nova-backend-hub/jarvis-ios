@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var callManager: CallManager
     @State private var showSettings = false
     @State private var draftUrl = ""
+    @State private var draftToken = ""
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -12,6 +13,7 @@ struct ContentView: View {
 
             Button {
                 draftUrl = callManager.serverUrl
+                draftToken = callManager.accessToken
                 showSettings = true
             } label: {
                 Image(systemName: callManager.isConnected ? "waveform.circle.fill" : "antenna.radiowaves.left.and.right.slash")
@@ -27,12 +29,16 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             NavigationView {
                 Form {
-                    Section("JARVIS Host PC") {
-                        TextField("http://192.168.1.150:8787", text: $draftUrl)
+                    Section("JARVIS Cloud Run / Host") {
+                        TextField("https://jarvis-backend-....run.app", text: $draftUrl)
                             .autocapitalization(.none)
                             .keyboardType(.URL)
+                        SecureField("JARVIS Access Token (Bearer)", text: $draftToken)
+                            .autocapitalization(.none)
+                        Toggle("Background CallKit Keepalive", isOn: $callManager.keepAliveAudio)
                         Button("Save & Reconnect CallKit") {
                             callManager.serverUrl = draftUrl
+                            callManager.accessToken = draftToken
                             callManager.connectWebSocket()
                             showSettings = false
                         }
